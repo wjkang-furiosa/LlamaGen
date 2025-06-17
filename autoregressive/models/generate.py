@@ -77,7 +77,7 @@ def logits_to_probs(logits, temperature: float = 1.0, top_p: float=1.0, top_k: i
 def prefill(model, cond_idx: torch.Tensor, input_pos: torch.Tensor, cfg_scale: float, 
             local_guidance_scale: float = 0.5, window_parameter: int = 64, 
             window_type: str = "1d", **sampling_kwargs):
-    if cfg_scale > 1.0:
+    if True:#cfg_scale > 1.0:
         logits, _ = model(None, cond_idx, input_pos)
         logits_combined = logits
         cond_logits, uncond_logits, local_logits = torch.split(logits_combined, len(logits_combined) // 3, dim=0)
@@ -93,7 +93,7 @@ def decode_one_token(model, x: torch.Tensor, input_pos: torch.Tensor, cfg_scale:
                      local_guidance_scale: float = 0.5, window_parameter: int = 64, 
                      window_type: str = "1d", **sampling_kwargs):
     assert input_pos.shape[-1] == 1
-    if cfg_scale > 1.0:
+    if True:#cfg_scale > 1.0:
         x_combined = torch.cat([x, x, x])  # 3 batches now
         logits, _ = model(x_combined, cond_idx=None, input_pos=input_pos)
         logits_combined = logits
@@ -134,14 +134,14 @@ def decode_n_tokens(
 def generate(model, cond, max_new_tokens, emb_masks=None, cfg_scale=1.0, cfg_interval=-1, 
              local_guidance_scale=0.5, window_parameter=64, window_type="1d", **sampling_kwargs):
     if model.model_type == 'c2i':
-        if cfg_scale > 1.0:
+        if True:#cfg_scale > 1.0:
             cond_null = torch.ones_like(cond) * model.num_classes
             cond_combined = torch.cat([cond, cond_null, cond])  # Add third batch for local guidance
         else:
             cond_combined = cond
         T = 1
     elif model.model_type == 't2i':
-        if cfg_scale > 1.0:
+        if True:#cfg_scale > 1.0:
             cond_null = torch.zeros_like(cond) + model.cls_embedding.uncond_embedding
             cond_combined = torch.cat([cond, cond_null, cond])  # Add third batch for local guidance
         else:
@@ -156,7 +156,8 @@ def generate(model, cond, max_new_tokens, emb_masks=None, cfg_scale=1.0, cfg_int
 
     device = cond.device
     with torch.device(device):
-        max_batch_size_cfg = max_batch_size * 3 if cfg_scale > 1.0 else max_batch_size
+        #max_batch_size_cfg = max_batch_size * 3 if cfg_scale > 1.0 else max_batch_size
+        max_batch_size_cfg = max_batch_size * 3 if True else max_batch_size  
         model.setup_caches(max_batch_size=max_batch_size_cfg, max_seq_length=max_seq_length, 
                           dtype=model.tok_embeddings.weight.dtype, window_parameter=window_parameter,
                           window_type=window_type)
@@ -164,7 +165,7 @@ def generate(model, cond, max_new_tokens, emb_masks=None, cfg_scale=1.0, cfg_int
     if emb_masks is not None:
         assert emb_masks.shape[0] == max_batch_size
         assert emb_masks.shape[-1] == T
-        if cfg_scale > 1.0:
+        if True:#cfg_scale > 1.0:
             model.causal_mask[:, :, :T] = model.causal_mask[:, :, :T] * torch.cat([emb_masks, emb_masks, emb_masks]).unsqueeze(1)
         else:
             model.causal_mask[:, :, :T] = model.causal_mask[:, :, :T] * emb_masks.unsqueeze(1)
@@ -173,7 +174,8 @@ def generate(model, cond, max_new_tokens, emb_masks=None, cfg_scale=1.0, cfg_int
         model.causal_mask[:] = model.causal_mask * (1 - eye_matrix) + eye_matrix
     
     # Also apply mask to recent window mask for local guidance
-    if cfg_scale > 1.0 and hasattr(model, 'recent_window_mask'):
+    #if cfg_scale > 1.0 and hasattr(model, 'recent_window_mask'):
+    if True and hasattr(model, 'recent_window_mask'):
         if emb_masks is not None:
             batch_per_type = max_batch_size
             # Apply emb_masks to the local guidance part of recent_window_mask

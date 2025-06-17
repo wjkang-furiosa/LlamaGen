@@ -115,7 +115,8 @@ def main(args):
         ckpt_string_name = os.path.basename(args.gpt_ckpt).replace(".pth", "").replace(".pt", "")
     folder_name = f"{model_string_name}-{ckpt_string_name}-size-{args.image_size}-size-{args.image_size_eval}-{args.vq_model}-" \
                   f"topk-{args.top_k}-topp-{args.top_p}-temperature-{args.temperature}-" \
-                  f"cfg-{args.cfg_scale}-local-{args.local_guidance_scale}-window-{args.window_parameter}-{args.window_type}-seed-{args.global_seed}"
+                  f"cfg-{args.cfg_scale}-local-{args.local_guidance_scale}-window-{args.window_parameter}-{args.window_type}-" \
+                  f"batchsize-{args.per_proc_batch_size}-seed-{args.global_seed}"
     sample_folder_dir = f"{args.sample_dir}/{folder_name}"
     if rank == 0:
         os.makedirs(sample_folder_dir, exist_ok=True)
