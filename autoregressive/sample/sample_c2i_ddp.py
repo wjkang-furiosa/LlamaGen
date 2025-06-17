@@ -53,6 +53,10 @@ def main(args):
     torch.manual_seed(seed)
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
+    
+    # Print window size adjustment info
+    if rank == 0 and args.window_type == "2d" and args.recent_window_size == 3:
+        print(f"Using 2D window with radius {args.recent_window_size} (window size {2*args.recent_window_size+1}x{2*args.recent_window_size+1})")
 
     # create and load model
     vq_model = VQ_models[args.vq_model](
@@ -109,7 +113,7 @@ def main(args):
         ckpt_string_name = os.path.basename(args.gpt_ckpt).replace(".pth", "").replace(".pt", "")
     folder_name = f"{model_string_name}-{ckpt_string_name}-size-{args.image_size}-size-{args.image_size_eval}-{args.vq_model}-" \
                   f"topk-{args.top_k}-topp-{args.top_p}-temperature-{args.temperature}-" \
-                  f"cfg-{args.cfg_scale}-local-{args.local_guidance_scale}-window-{args.recent_window_size}-seed-{args.global_seed}"
+                  f"cfg-{args.cfg_scale}-local-{args.local_guidance_scale}-window-{args.recent_window_size}-{args.window_type}-seed-{args.global_seed}"
     sample_folder_dir = f"{args.sample_dir}/{folder_name}"
     if rank == 0:
         os.makedirs(sample_folder_dir, exist_ok=True)
@@ -140,6 +144,7 @@ def main(args):
             cfg_scale=args.cfg_scale, cfg_interval=args.cfg_interval,
             local_guidance_scale=args.local_guidance_scale,
             recent_window_size=args.recent_window_size,
+            window_type=args.window_type,
             temperature=args.temperature, top_k=args.top_k,
             top_p=args.top_p, sample_logits=True, 
             )
@@ -185,7 +190,8 @@ if __name__ == "__main__":
     parser.add_argument("--cfg-scale",  type=float, default=1.5)
     parser.add_argument("--cfg-interval", type=float, default=-1)
     parser.add_argument("--local-guidance-scale", type=float, default=0.5, help="scale for local negative guidance")
-    parser.add_argument("--recent-window-size", type=int, default=64, help="window size for recent attention")
+    parser.add_argument("--recent-window-size", type=int, default=64, help="window size for recent attention (1d: sequence length, 2d: spatial radius)")
+    parser.add_argument("--window-type", type=str, default="1d", choices=["1d", "2d"], help="type of local window (1d sequential or 2d spatial)")
     parser.add_argument("--sample-dir", type=str, default="samples")
     parser.add_argument("--per-proc-batch-size", type=int, default=32)
     parser.add_argument("--num-fid-samples", type=int, default=50000)
@@ -194,4 +200,11 @@ if __name__ == "__main__":
     parser.add_argument("--temperature", type=float, default=1.0, help="temperature value to sample with")
     parser.add_argument("--top-p", type=float, default=1.0, help="top-p value to sample with")
     args = parser.parse_args()
+    
+    # Adjust window size for 2D if needed
+    if args.window_type == "2d" and args.recent_window_size == 64:
+        # For 2D, default to radius 3 (7x7 window) instead of 64
+        args.recent_window_size = 3
+        # Print will happen later in main() after dist is initialized
+    
     main(args)

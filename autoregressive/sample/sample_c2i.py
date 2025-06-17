@@ -89,6 +89,7 @@ def main(args):
         cfg_scale=args.cfg_scale, cfg_interval=args.cfg_interval,
         local_guidance_scale=args.local_guidance_scale,
         recent_window_size=args.recent_window_size,
+        window_type=args.window_type,
         temperature=args.temperature, top_k=args.top_k,
         top_p=args.top_p, sample_logits=True, 
         )
@@ -101,10 +102,10 @@ def main(args):
     print(f"decoder takes about {decoder_time:.2f} seconds.")
 
     # Save and display images:
-    save_image(samples, "sample_{}_cfg{}_local{}_window{}.png".format(
-        args.gpt_type, args.cfg_scale, args.local_guidance_scale, args.recent_window_size
+    save_image(samples, "sample_{}_cfg{}_local{}_window{}_{}.png".format(
+        args.gpt_type, args.cfg_scale, args.local_guidance_scale, args.recent_window_size, args.window_type
     ), nrow=4, normalize=True, value_range=(-1, 1))
-    print(f"image is saved to sample_{args.gpt_type}_cfg{args.cfg_scale}_local{args.local_guidance_scale}_window{args.recent_window_size}.png")
+    print(f"image is saved to sample_{args.gpt_type}_cfg{args.cfg_scale}_local{args.local_guidance_scale}_window{args.recent_window_size}_{args.window_type}.png")
 
 
 if __name__ == "__main__":
@@ -126,10 +127,18 @@ if __name__ == "__main__":
     parser.add_argument("--cfg-scale", type=float, default=4.0)
     parser.add_argument("--cfg-interval", type=float, default=-1)
     parser.add_argument("--local-guidance-scale", type=float, default=0.5, help="scale for local negative guidance")
-    parser.add_argument("--recent-window-size", type=int, default=64, help="window size for recent attention")
+    parser.add_argument("--recent-window-size", type=int, default=64, help="window size for recent attention (1d: sequence length, 2d: spatial radius)")
+    parser.add_argument("--window-type", type=str, default="1d", choices=["1d", "2d"], help="type of local window (1d sequential or 2d spatial)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--top-k", type=int, default=2000,help="top-k value to sample with")
     parser.add_argument("--temperature", type=float, default=1.0, help="temperature value to sample with")
     parser.add_argument("--top-p", type=float, default=1.0, help="top-p value to sample with")
     args = parser.parse_args()
+    
+    # Adjust window size for 2D if needed
+    if args.window_type == "2d" and args.recent_window_size == 64:
+        # For 2D, default to radius 3 (7x7 window) instead of 64
+        args.recent_window_size = 3
+        print(f"Adjusting window size to {args.recent_window_size} for 2D window type")
+    
     main(args)

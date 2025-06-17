@@ -75,7 +75,8 @@ def logits_to_probs(logits, temperature: float = 1.0, top_p: float=1.0, top_k: i
 
 
 def prefill(model, cond_idx: torch.Tensor, input_pos: torch.Tensor, cfg_scale: float, 
-            local_guidance_scale: float = 0.5, recent_window_size: int = 64, **sampling_kwargs):
+            local_guidance_scale: float = 0.5, recent_window_size: int = 64, 
+            window_type: str = "1d", **sampling_kwargs):
     if cfg_scale > 1.0:
         logits, _ = model(None, cond_idx, input_pos)
         logits_combined = logits
@@ -89,7 +90,8 @@ def prefill(model, cond_idx: torch.Tensor, input_pos: torch.Tensor, cfg_scale: f
 
 
 def decode_one_token(model, x: torch.Tensor, input_pos: torch.Tensor, cfg_scale: float, cfg_flag: bool, 
-                     local_guidance_scale: float = 0.5, recent_window_size: int = 64, **sampling_kwargs):
+                     local_guidance_scale: float = 0.5, recent_window_size: int = 64, 
+                     window_type: str = "1d", **sampling_kwargs):
     assert input_pos.shape[-1] == 1
     if cfg_scale > 1.0:
         x_combined = torch.cat([x, x, x])  # 3 batches now
@@ -109,7 +111,7 @@ def decode_one_token(model, x: torch.Tensor, input_pos: torch.Tensor, cfg_scale:
 def decode_n_tokens(
     model, cur_token: torch.Tensor, input_pos: torch.Tensor, num_new_tokens: int, 
     cfg_scale: float, cfg_interval: int, local_guidance_scale: float = 0.5, 
-    recent_window_size: int = 64, **sampling_kwargs):
+    recent_window_size: int = 64, window_type: str = "1d", **sampling_kwargs):
     new_tokens, new_probs = [], []
     cfg_flag = True
     for i in range(num_new_tokens):
@@ -118,7 +120,7 @@ def decode_n_tokens(
                 cfg_flag = False
             next_token, next_prob = decode_one_token(
                 model, cur_token, input_pos, cfg_scale, cfg_flag, 
-                local_guidance_scale, recent_window_size, **sampling_kwargs
+                local_guidance_scale, recent_window_size, window_type, **sampling_kwargs
             )
             input_pos += 1
             new_tokens.append(next_token.clone())
@@ -130,7 +132,7 @@ def decode_n_tokens(
 
 @torch.no_grad()
 def generate(model, cond, max_new_tokens, emb_masks=None, cfg_scale=1.0, cfg_interval=-1, 
-             local_guidance_scale=0.5, recent_window_size=64, **sampling_kwargs):
+             local_guidance_scale=0.5, recent_window_size=64, window_type="1d", **sampling_kwargs):
     if model.model_type == 'c2i':
         if cfg_scale > 1.0:
             cond_null = torch.ones_like(cond) * model.num_classes
@@ -156,7 +158,8 @@ def generate(model, cond, max_new_tokens, emb_masks=None, cfg_scale=1.0, cfg_int
     with torch.device(device):
         max_batch_size_cfg = max_batch_size * 3 if cfg_scale > 1.0 else max_batch_size
         model.setup_caches(max_batch_size=max_batch_size_cfg, max_seq_length=max_seq_length, 
-                          dtype=model.tok_embeddings.weight.dtype, recent_window_size=recent_window_size)
+                          dtype=model.tok_embeddings.weight.dtype, recent_window_size=recent_window_size,
+                          window_type=window_type)
     
     if emb_masks is not None:
         assert emb_masks.shape[0] == max_batch_size
@@ -182,11 +185,11 @@ def generate(model, cond, max_new_tokens, emb_masks=None, cfg_scale=1.0, cfg_int
     seq = torch.empty((max_batch_size, T_new), dtype=torch.int, device=device)
 
     input_pos = torch.arange(0, T, device=device)
-    next_token = prefill(model, cond_combined, input_pos, cfg_scale, local_guidance_scale, recent_window_size, **sampling_kwargs)
+    next_token = prefill(model, cond_combined, input_pos, cfg_scale, local_guidance_scale, recent_window_size, window_type, **sampling_kwargs)
     seq[:, T:T+1] = next_token
 
     input_pos = torch.tensor([T], device=device, dtype=torch.int)
-    generated_tokens, _ = decode_n_tokens(model, next_token, input_pos, max_new_tokens-1, cfg_scale, cfg_interval, local_guidance_scale, recent_window_size, **sampling_kwargs)
+    generated_tokens, _ = decode_n_tokens(model, next_token, input_pos, max_new_tokens-1, cfg_scale, cfg_interval, local_guidance_scale, recent_window_size, window_type, **sampling_kwargs)
     seq[:, T+1:] = torch.cat(generated_tokens, dim=1)
 
     return seq[:, T:]
