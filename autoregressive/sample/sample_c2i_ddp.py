@@ -55,8 +55,10 @@ def main(args):
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
     
     # Print window size adjustment info
-    if rank == 0 and args.window_type == "2d" and args.recent_window_size == 3:
-        print(f"Using 2D window with radius {args.recent_window_size} (window size {2*args.recent_window_size+1}x{2*args.recent_window_size+1})")
+    if rank == 0 and args.window_type == "2d" and args.window_parameter == 3:
+        print(f"Using 2D window with radius {args.window_parameter} (window size {2*args.window_parameter+1}x{2*args.window_parameter+1})")
+    elif rank == 0 and args.window_type in ["1d_strided", "2d_strided", "checkerboard"] and args.window_parameter == 2:
+        print(f"Using {args.window_type} with stride {args.window_parameter}")
 
     # create and load model
     vq_model = VQ_models[args.vq_model](
@@ -113,7 +115,7 @@ def main(args):
         ckpt_string_name = os.path.basename(args.gpt_ckpt).replace(".pth", "").replace(".pt", "")
     folder_name = f"{model_string_name}-{ckpt_string_name}-size-{args.image_size}-size-{args.image_size_eval}-{args.vq_model}-" \
                   f"topk-{args.top_k}-topp-{args.top_p}-temperature-{args.temperature}-" \
-                  f"cfg-{args.cfg_scale}-local-{args.local_guidance_scale}-window-{args.recent_window_size}-{args.window_type}-seed-{args.global_seed}"
+                  f"cfg-{args.cfg_scale}-local-{args.local_guidance_scale}-window-{args.window_parameter}-{args.window_type}-seed-{args.global_seed}"
     sample_folder_dir = f"{args.sample_dir}/{folder_name}"
     if rank == 0:
         os.makedirs(sample_folder_dir, exist_ok=True)
@@ -143,7 +145,7 @@ def main(args):
             gpt_model, c_indices, latent_size ** 2,
             cfg_scale=args.cfg_scale, cfg_interval=args.cfg_interval,
             local_guidance_scale=args.local_guidance_scale,
-            recent_window_size=args.recent_window_size,
+            window_parameter=args.window_parameter,
             window_type=args.window_type,
             temperature=args.temperature, top_k=args.top_k,
             top_p=args.top_p, sample_logits=True, 
@@ -190,8 +192,9 @@ if __name__ == "__main__":
     parser.add_argument("--cfg-scale",  type=float, default=1.5)
     parser.add_argument("--cfg-interval", type=float, default=-1)
     parser.add_argument("--local-guidance-scale", type=float, default=0.5, help="scale for local negative guidance")
-    parser.add_argument("--recent-window-size", type=int, default=64, help="window size for recent attention (1d: sequence length, 2d: spatial radius)")
-    parser.add_argument("--window-type", type=str, default="1d", choices=["1d", "2d"], help="type of local window (1d sequential or 2d spatial)")
+    parser.add_argument("--window-parameter", type=int, default=64, help="window parameter (1d: sequence length, 2d: spatial radius, strided: stride value)")
+    parser.add_argument("--window-type", type=str, default="1d", choices=["1d", "2d", "1d_strided", "2d_strided", "checkerboard"], 
+                        help="type of local window (1d sequential, 2d spatial, 1d_strided, 2d_strided, or checkerboard)")
     parser.add_argument("--sample-dir", type=str, default="samples")
     parser.add_argument("--per-proc-batch-size", type=int, default=32)
     parser.add_argument("--num-fid-samples", type=int, default=50000)
@@ -202,9 +205,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Adjust window size for 2D if needed
-    if args.window_type == "2d" and args.recent_window_size == 64:
+    if args.window_type == "2d" and args.window_parameter == 64:
         # For 2D, default to radius 3 (7x7 window) instead of 64
-        args.recent_window_size = 3
+        args.window_parameter = 3
+        # Print will happen later in main() after dist is initialized
+    elif args.window_type in ["1d_strided", "2d_strided", "checkerboard"] and args.window_parameter == 64:
+        # For strided types, default to stride 2
+        args.window_parameter = 2
         # Print will happen later in main() after dist is initialized
     
     main(args)

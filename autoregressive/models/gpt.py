@@ -325,6 +325,79 @@ class Transformer(nn.Module):
                     
         return mask
 
+    def create_1d_strided_mask(self, max_seq_length, stride):
+        """Create a 1D strided mask where only positions at multiples of stride are visible."""
+        mask = torch.zeros(max_seq_length, max_seq_length, dtype=torch.bool)
+        
+        for i in range(max_seq_length):
+            # Always include class token (position 0)
+            mask[i, 0] = True
+            
+            if i == 0:  # Class token position
+                mask[i, i] = True
+                continue
+                
+            # For image tokens, only see positions that are multiples of stride
+            for j in range(1, i + 1):
+                if (j - 1) % stride == 0:  # See positions 1, 1+stride, 1+2*stride, ...
+                    mask[i, j] = True
+                    
+        return mask
+    
+    def create_2d_strided_mask(self, max_seq_length, grid_size, stride):
+        """Create a 2D strided mask where only positions at grid multiples of stride are visible."""
+        mask = torch.zeros(max_seq_length, max_seq_length, dtype=torch.bool)
+        
+        for i in range(max_seq_length):
+            # Always include class token (position 0)
+            mask[i, 0] = True
+            
+            if i == 0:  # Class token position
+                mask[i, i] = True
+                continue
+                
+            # Current position's 2D coordinates
+            curr_row = (i - 1) // grid_size
+            curr_col = (i - 1) % grid_size
+            
+            # Check all previous positions
+            for j in range(1, i + 1):
+                prev_row = (j - 1) // grid_size
+                prev_col = (j - 1) % grid_size
+                
+                # Check if both row and col are at multiples of stride
+                if prev_row % stride == 0 and prev_col % stride == 0:
+                    mask[i, j] = True
+                    
+        return mask
+    
+    def create_checkerboard_mask(self, max_seq_length, grid_size):
+        """Create a checkerboard mask where positions follow a checkerboard pattern."""
+        mask = torch.zeros(max_seq_length, max_seq_length, dtype=torch.bool)
+        
+        for i in range(max_seq_length):
+            # Always include class token (position 0)
+            mask[i, 0] = True
+            
+            if i == 0:  # Class token position
+                mask[i, i] = True
+                continue
+                
+            # Current position's 2D coordinates
+            curr_row = (i - 1) // grid_size
+            curr_col = (i - 1) % grid_size
+            
+            # Check all previous positions
+            for j in range(1, i + 1):
+                prev_row = (j - 1) // grid_size
+                prev_col = (j - 1) % grid_size
+                
+                # Checkerboard pattern: (row + col) % 2 == 0
+                if (prev_row + prev_col) % 2 == 0:
+                    mask[i, j] = True
+                    
+        return mask
+
     def initialize_weights(self):        
         # Initialize nn.Linear and nn.Embedding
         self.apply(self._init_weights)
@@ -341,7 +414,7 @@ class Transformer(nn.Module):
         elif isinstance(module, nn.Embedding):
             module.weight.data.normal_(mean=0.0, std=std)
 
-    def setup_caches(self, max_batch_size, max_seq_length, dtype, recent_window_size=64, window_type="1d"):
+    def setup_caches(self, max_batch_size, max_seq_length, dtype, window_parameter=64, window_type="1d"):
         # if self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
         #     return
         head_dim = self.config.dim // self.config.n_head
@@ -359,9 +432,24 @@ class Transformer(nn.Module):
         assert grid_size * grid_size == self.block_size
         
         if window_type == "2d":
-            # For 2D window, recent_window_size is the radius
+            # For 2D window, window_parameter is the radius
             self.recent_window_mask = self.create_2d_window_mask(
-                self.max_seq_length, grid_size, window_radius=recent_window_size
+                self.max_seq_length, grid_size, window_radius=window_parameter
+            )
+        elif window_type == "1d_strided":
+            # For 1D strided, window_parameter is the stride
+            self.recent_window_mask = self.create_1d_strided_mask(
+                self.max_seq_length, stride=window_parameter
+            )
+        elif window_type == "2d_strided":
+            # For 2D strided, window_parameter is the stride
+            self.recent_window_mask = self.create_2d_strided_mask(
+                self.max_seq_length, grid_size, stride=window_parameter
+            )
+        elif window_type == "checkerboard":
+            # For checkerboard, ignore recent_window_size
+            self.recent_window_mask = self.create_checkerboard_mask(
+                self.max_seq_length, grid_size
             )
         else:  # 1d
             self.recent_window_mask = torch.zeros(self.max_seq_length, self.max_seq_length, dtype=torch.bool)
@@ -371,13 +459,13 @@ class Transformer(nn.Module):
                 
                 # Apply window only to image tokens
                 if i > 0:  # For image token positions
-                    start = max(1, i - recent_window_size + 1)  # Start from 1 (first image token)
+                    start = max(1, i - window_parameter + 1)  # Start from 1 (first image token)
                     self.recent_window_mask[i, start:i+1] = True
                 else:  # For class token position
                     self.recent_window_mask[i, i] = True  # Only see itself
                     
         self.recent_window_mask = self.recent_window_mask.unsqueeze(0).repeat(self.max_batch_size, 1, 1)
-        self.recent_window_size = recent_window_size
+        self.window_parameter = window_parameter
         self.window_type = window_type
         
         self.freqs_cis = precompute_freqs_cis_2d(grid_size, self.config.dim // self.config.n_head, self.config.rope_base, self.cls_token_num)
