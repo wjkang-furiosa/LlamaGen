@@ -313,7 +313,7 @@ class Transformer(nn.Module):
         elif isinstance(module, nn.Embedding):
             module.weight.data.normal_(mean=0.0, std=std)
 
-    def setup_caches(self, max_batch_size, max_seq_length, dtype):
+    def setup_caches(self, max_batch_size, max_seq_length, dtype, recent_window_size=64):
         # if self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
         #     return
         head_dim = self.config.dim // self.config.n_head
@@ -325,6 +325,23 @@ class Transformer(nn.Module):
 
         causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool))
         self.causal_mask = causal_mask.unsqueeze(0).repeat(self.max_batch_size, 1, 1)
+        
+        # Create recent window mask for local guidance
+        self.recent_window_mask = torch.zeros(self.max_seq_length, self.max_seq_length, dtype=torch.bool)
+        for i in range(self.max_seq_length):
+            # Always include class token (position 0)
+            self.recent_window_mask[i, 0] = True
+            
+            # Apply window only to image tokens
+            if i > 0:  # For image token positions
+                start = max(1, i - recent_window_size + 1)  # Start from 1 (first image token)
+                self.recent_window_mask[i, start:i+1] = True
+            else:  # For class token position
+                self.recent_window_mask[i, i] = True  # Only see itself
+                
+        self.recent_window_mask = self.recent_window_mask.unsqueeze(0).repeat(self.max_batch_size, 1, 1)
+        self.recent_window_size = recent_window_size
+        
         grid_size = int(self.config.block_size ** 0.5)
         assert grid_size * grid_size == self.block_size
         self.freqs_cis = precompute_freqs_cis_2d(grid_size, self.config.dim // self.config.n_head, self.config.rope_base, self.cls_token_num)
@@ -351,7 +368,17 @@ class Transformer(nn.Module):
                 token_embeddings = self.tok_embeddings(idx)
             
             bs = token_embeddings.shape[0]
-            mask = self.causal_mask[:bs, None, input_pos]
+            
+            # Check if using local guidance (batch size is multiple of 3)
+            if hasattr(self, 'recent_window_mask') and bs % 3 == 0 and bs > 1:
+                # Create different masks for different parts of the batch
+                batch_per_type = bs // 3
+                mask_causal = self.causal_mask[:batch_per_type * 2, None, input_pos]
+                mask_local = self.recent_window_mask[:batch_per_type, None, input_pos]
+                mask = torch.cat([mask_causal, mask_local], dim=0)
+            else:
+                mask = self.causal_mask[:bs, None, input_pos]
+                
             h = self.tok_dropout(token_embeddings)
             self.freqs_cis = self.freqs_cis
         

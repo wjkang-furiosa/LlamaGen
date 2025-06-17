@@ -74,27 +74,31 @@ def logits_to_probs(logits, temperature: float = 1.0, top_p: float=1.0, top_k: i
     return probs
 
 
-def prefill(model, cond_idx: torch.Tensor, input_pos: torch.Tensor, cfg_scale: float, **sampling_kwargs):
+def prefill(model, cond_idx: torch.Tensor, input_pos: torch.Tensor, cfg_scale: float, 
+            local_guidance_scale: float = 0.5, recent_window_size: int = 64, **sampling_kwargs):
     if cfg_scale > 1.0:
         logits, _ = model(None, cond_idx, input_pos)
         logits_combined = logits
-        cond_logits, uncond_logits = torch.split(logits_combined, len(logits_combined) // 2, dim=0)
-        logits = uncond_logits + (cond_logits - uncond_logits) * cfg_scale
+        cond_logits, uncond_logits, local_logits = torch.split(logits_combined, len(logits_combined) // 3, dim=0)
+        # Apply classifier-free guidance with differential enhancement
+        logits = uncond_logits + (cond_logits - uncond_logits) * cfg_scale + (cond_logits - local_logits) * local_guidance_scale
     else:
         logits, _ = model(None, cond_idx, input_pos)
 
     return sample(logits, **sampling_kwargs)[0]
 
 
-def decode_one_token(model, x: torch.Tensor, input_pos: torch.Tensor, cfg_scale: float, cfg_flag: bool, **sampling_kwargs):
+def decode_one_token(model, x: torch.Tensor, input_pos: torch.Tensor, cfg_scale: float, cfg_flag: bool, 
+                     local_guidance_scale: float = 0.5, recent_window_size: int = 64, **sampling_kwargs):
     assert input_pos.shape[-1] == 1
     if cfg_scale > 1.0:
-        x_combined = torch.cat([x, x])
+        x_combined = torch.cat([x, x, x])  # 3 batches now
         logits, _ = model(x_combined, cond_idx=None, input_pos=input_pos)
         logits_combined = logits
-        cond_logits, uncond_logits = torch.split(logits_combined, len(logits_combined) // 2, dim=0) 
+        cond_logits, uncond_logits, local_logits = torch.split(logits_combined, len(logits_combined) // 3, dim=0) 
         if cfg_flag:
-            logits = uncond_logits + (cond_logits - uncond_logits) * cfg_scale
+            # Apply classifier-free guidance with differential enhancement
+            logits = uncond_logits + (cond_logits - uncond_logits) * cfg_scale + (cond_logits - local_logits) * local_guidance_scale
         else:
             logits = cond_logits
     else:
@@ -104,8 +108,8 @@ def decode_one_token(model, x: torch.Tensor, input_pos: torch.Tensor, cfg_scale:
 
 def decode_n_tokens(
     model, cur_token: torch.Tensor, input_pos: torch.Tensor, num_new_tokens: int, 
-    cfg_scale: float, cfg_interval: int,
-    **sampling_kwargs):
+    cfg_scale: float, cfg_interval: int, local_guidance_scale: float = 0.5, 
+    recent_window_size: int = 64, **sampling_kwargs):
     new_tokens, new_probs = [], []
     cfg_flag = True
     for i in range(num_new_tokens):
@@ -113,7 +117,8 @@ def decode_n_tokens(
             if cfg_interval > -1 and i > cfg_interval:
                 cfg_flag = False
             next_token, next_prob = decode_one_token(
-                model, cur_token, input_pos, cfg_scale, cfg_flag, **sampling_kwargs
+                model, cur_token, input_pos, cfg_scale, cfg_flag, 
+                local_guidance_scale, recent_window_size, **sampling_kwargs
             )
             input_pos += 1
             new_tokens.append(next_token.clone())
@@ -124,18 +129,19 @@ def decode_n_tokens(
 
 
 @torch.no_grad()
-def generate(model, cond, max_new_tokens, emb_masks=None, cfg_scale=1.0, cfg_interval=-1, **sampling_kwargs):
+def generate(model, cond, max_new_tokens, emb_masks=None, cfg_scale=1.0, cfg_interval=-1, 
+             local_guidance_scale=0.5, recent_window_size=64, **sampling_kwargs):
     if model.model_type == 'c2i':
         if cfg_scale > 1.0:
             cond_null = torch.ones_like(cond) * model.num_classes
-            cond_combined = torch.cat([cond, cond_null])
+            cond_combined = torch.cat([cond, cond_null, cond])  # Add third batch for local guidance
         else:
             cond_combined = cond
         T = 1
     elif model.model_type == 't2i':
         if cfg_scale > 1.0:
             cond_null = torch.zeros_like(cond) + model.cls_embedding.uncond_embedding
-            cond_combined = torch.cat([cond, cond_null])
+            cond_combined = torch.cat([cond, cond_null, cond])  # Add third batch for local guidance
         else:
             cond_combined = cond
         T = cond.shape[1]      
@@ -148,29 +154,39 @@ def generate(model, cond, max_new_tokens, emb_masks=None, cfg_scale=1.0, cfg_int
 
     device = cond.device
     with torch.device(device):
-        max_batch_size_cfg = max_batch_size * 2 if cfg_scale > 1.0 else max_batch_size
-        model.setup_caches(max_batch_size=max_batch_size_cfg, max_seq_length=max_seq_length, dtype=model.tok_embeddings.weight.dtype)
+        max_batch_size_cfg = max_batch_size * 3 if cfg_scale > 1.0 else max_batch_size
+        model.setup_caches(max_batch_size=max_batch_size_cfg, max_seq_length=max_seq_length, 
+                          dtype=model.tok_embeddings.weight.dtype, recent_window_size=recent_window_size)
     
     if emb_masks is not None:
         assert emb_masks.shape[0] == max_batch_size
         assert emb_masks.shape[-1] == T
         if cfg_scale > 1.0:
-            model.causal_mask[:, :, :T] = model.causal_mask[:, :, :T] * torch.cat([emb_masks, emb_masks]).unsqueeze(1)
+            model.causal_mask[:, :, :T] = model.causal_mask[:, :, :T] * torch.cat([emb_masks, emb_masks, emb_masks]).unsqueeze(1)
         else:
             model.causal_mask[:, :, :T] = model.causal_mask[:, :, :T] * emb_masks.unsqueeze(1)
 
         eye_matrix = torch.eye(model.causal_mask.size(1), model.causal_mask.size(2), device=device)
         model.causal_mask[:] = model.causal_mask * (1 - eye_matrix) + eye_matrix
     
+    # Also apply mask to recent window mask for local guidance
+    if cfg_scale > 1.0 and hasattr(model, 'recent_window_mask'):
+        if emb_masks is not None:
+            batch_per_type = max_batch_size
+            # Apply emb_masks to the local guidance part of recent_window_mask
+            model.recent_window_mask[batch_per_type * 2:, :, :T] = model.recent_window_mask[batch_per_type * 2:, :, :T] * emb_masks.unsqueeze(1)
+            eye_matrix = torch.eye(model.recent_window_mask.size(1), model.recent_window_mask.size(2), device=device)
+            model.recent_window_mask[batch_per_type * 2:] = model.recent_window_mask[batch_per_type * 2:] * (1 - eye_matrix) + eye_matrix
+    
     # create an empty tensor of the expected final shape and fill in the current tokens
     seq = torch.empty((max_batch_size, T_new), dtype=torch.int, device=device)
 
     input_pos = torch.arange(0, T, device=device)
-    next_token = prefill(model, cond_combined, input_pos, cfg_scale, **sampling_kwargs)
+    next_token = prefill(model, cond_combined, input_pos, cfg_scale, local_guidance_scale, recent_window_size, **sampling_kwargs)
     seq[:, T:T+1] = next_token
 
     input_pos = torch.tensor([T], device=device, dtype=torch.int)
-    generated_tokens, _ = decode_n_tokens(model, next_token, input_pos, max_new_tokens-1, cfg_scale, cfg_interval, **sampling_kwargs)
+    generated_tokens, _ = decode_n_tokens(model, next_token, input_pos, max_new_tokens-1, cfg_scale, cfg_interval, local_guidance_scale, recent_window_size, **sampling_kwargs)
     seq[:, T+1:] = torch.cat(generated_tokens, dim=1)
 
     return seq[:, T:]
